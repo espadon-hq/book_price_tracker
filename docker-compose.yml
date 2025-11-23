@@ -1,0 +1,96 @@
+# book_price_tracker/docker-compose.yml
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis_broker
+    # Redis використовується як брокер для Celery та як кеш для Django.
+    ports:
+      - "6379:6379"
+
+  web:
+    build: .
+    container_name: django_web
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis # Вказуємо хост для підключення до Redis
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started # Web також залежить від Redis для кешування
+
+  # 🆕 НОВИЙ СЕРВІС: Celery Worker
+  # 🆕 ОНОВЛЕНИЙ СЕРВІС: Celery Worker
+  celery_worker:
+    build: .
+    container_name: celery_worker
+    # ❌ ПОМИЛКОВА КОМАНДА: command: celery -A book_price_tracker worker -l info
+    # ✅ ВИПРАВЛЕНА КОМАНДА: 
+    command: python -m celery -A config worker -l info 
+    volumes:
+      - .:/app
+    environment:
+      POSTGRES_HOST: db
+      REDIS_HOST: redis
+    depends_on:
+      - web
+      - redis
+      - db
+
+  # 🆕 ОНОВЛЕНИЙ СЕРВІС: Celery Beat (Планувальник)
+  celery_beat:
+    build: .
+    container_name: celery_beat
+    # ❌ ПОМИЛКОВА КОМАНДА: command: celery -A book_price_tracker beat -l info --scheduler ...
+    # ✅ ВИПРАВЛЕНА КОМАНДА:
+    command: python -m celery -A config beat -l info --scheduler django_celery_beat.schedulers.DatabaseScheduler
+    volumes:
+      - .:/app
+    environment:
+      POSTGRES_HOST: db
+      REDIS_HOST: redis
+    depends_on:
+      - celery_worker
+      - redis
+      - db
+
+  nginx:
+    image: nginx:stable-alpine
+    container_name: nginx_proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - web
+
+volumes:
+  postgres_data:
